@@ -6,4 +6,4 @@
 bin/*
 vendor/
 
-/bamboo-prometheus-exporter
+bamboo_exporter
