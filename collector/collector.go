@@ -18,14 +18,17 @@ const namespace = "bamboo"
 
 // Exporter collects metrics from Bamboo and exposes them to Prometheus.
 type Exporter struct {
-	URI      string
-	client   *http.Client
-	mutex    sync.Mutex
-	up       *prometheus.Desc
-	failures prometheus.Counter
-	agents   *prometheus.GaugeVec
-	queue    prometheus.Gauge
-	logger   *slog.Logger
+	URI               string
+	client            *http.Client
+	mutex             sync.Mutex
+	up                *prometheus.Desc
+	failures          prometheus.Counter
+	agents            *prometheus.GaugeVec
+	queue             prometheus.Gauge
+	utilization       prometheus.Gauge
+	queueChange       prometheus.Gauge
+	logger            *slog.Logger
+	previousQueueSize int64
 }
 
 // Config holds the configuration for the exporter.
@@ -79,6 +82,16 @@ func NewExporter(config *Config, logger *slog.Logger) *Exporter {
 			Name:      "queue_size",
 			Help:      "Number of builds in the Bamboo queue.",
 		}),
+		utilization: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "agent_utilization",
+			Help:      "Utilization rate of Bamboo agents (busy/active ratio).",
+		}),
+		queueChange: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "queue_change",
+			Help:      "Change in the Bamboo build queue size since the last scrape.",
+		}),
 		logger: logger,
 	}
 }
@@ -89,6 +102,8 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	e.failures.Describe(ch)
 	e.agents.Describe(ch)
 	e.queue.Describe(ch)
+	e.utilization.Describe(ch)
+	e.queueChange.Describe(ch)
 }
 
 // Collect collects metrics from Bamboo and sends them to Prometheus.
@@ -101,6 +116,8 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	e.failures.Collect(ch)
 	e.agents.Collect(ch)
 	e.queue.Collect(ch)
+	e.utilization.Collect(ch)
+	e.queueChange.Collect(ch)
 }
 
 // scrapeMetrics fetches metrics from Bamboo and processes them.
@@ -133,17 +150,28 @@ func (e *Exporter) scrapeAgents() error {
 	}
 
 	e.agents.Reset()
+	activeCount := 0
+	busyCount := 0
+
 	for _, agent := range agents {
 		status := "inactive"
 		if agent.IsActive {
 			status = "active"
+			activeCount++
 		}
 		e.agents.WithLabelValues(agent.Name, status).Set(1)
 
 		if agent.IsBusy {
 			e.agents.WithLabelValues(agent.Name, "busy").Set(1)
+			busyCount++
 		}
 	}
+
+	if activeCount > 0 {
+		utilization := float64(busyCount) / float64(activeCount)
+		e.utilization.Set(utilization)
+	}
+
 	return nil
 }
 
@@ -159,7 +187,14 @@ func (e *Exporter) scrapeQueue() error {
 		return fmt.Errorf("error unmarshaling queue: %w", err)
 	}
 
-	e.queue.Set(float64(queue.QueuedBuilds.Size))
+	currentQueueSize := queue.QueuedBuilds.Size
+	e.queue.Set(float64(currentQueueSize))
+
+	// Calculate queue size change
+	change := currentQueueSize - e.previousQueueSize
+	e.queueChange.Set(float64(change))
+	e.previousQueueSize = currentQueueSize
+
 	return nil
 }
 

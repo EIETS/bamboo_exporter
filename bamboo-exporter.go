@@ -7,7 +7,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/EIETS/bamboo-prometheus-exporter/collector"
 	"github.com/alecthomas/kingpin/v2"
+	"github.com/prometheus/client_golang/prometheus"
+	versioncollector "github.com/prometheus/client_golang/prometheus/collectors/version"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/promslog"
 	"github.com/prometheus/common/promslog/flag"
@@ -18,7 +21,8 @@ import (
 
 var (
 	metricsEndpoint = kingpin.Flag("telemetry.endpoint", "Path under which to expose metrics.").Default("/metrics").String()
-	scrapeHost      = kingpin.Flag("bamboo.host", "Bamboo host to scrape").Default("http://localhost:8085").String()
+	scrapeURI       = kingpin.Flag("bamboo.uri", "Full Bamboo URI to scrape metrics from.").Default("http://localhost:8085").String()
+	insecure        = kingpin.Flag("insecure", "Ignore server certificate if using https.").Bool()
 	// toolkitFlags: Add default web server configuration flags.
 	toolkitFlags = kingpinflag.AddFlags(kingpin.CommandLine, ":9117")
 	// gracefulStop: Channel to receive OS signals for graceful shutdown.
@@ -38,10 +42,19 @@ func main() {
 	// listen to termination signals from the OS
 	signal.Notify(gracefulStop, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGQUIT)
 
+	config := &collector.Config{
+		ScrapeURI: *scrapeURI,
+		Insecure:  *insecure,
+	}
+
+	exporter := collector.NewExporter(config, logger)
+	prometheus.MustRegister(exporter)
+	prometheus.MustRegister(versioncollector.NewCollector("bamboo_exporter"))
+
 	// log startup information
 	logger.Info("Starting bamboo_exporter", "version", version.Info())
 	logger.Info("Build context", "build", version.BuildContext())
-	logger.Info("Collecting metrics from", "scrape_host", *scrapeHost)
+	logger.Info("Collecting metrics from", "scrape_host", *scrapeURI)
 
 	// listener for the termination signals from the OS
 	go func() {
