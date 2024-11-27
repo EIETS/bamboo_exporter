@@ -7,7 +7,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/EIETS/bamboo-prometheus-exporter/collector"
+	"github.com/EIETS/bamboo_exporter/collector"
 	"github.com/alecthomas/kingpin/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	versioncollector "github.com/prometheus/client_golang/prometheus/collectors/version"

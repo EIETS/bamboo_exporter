@@ -1,4 +1,4 @@
-module github.com/EIETS/bamboo-prometheus-exporter
+module github.com/EIETS/bamboo_exporter
 
 go 1.23.1
 
