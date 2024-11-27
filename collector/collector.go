@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
+	"log/slog"
+
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -25,7 +25,7 @@ type Exporter struct {
 	failures prometheus.Counter
 	agents   *prometheus.GaugeVec
 	queue    prometheus.Gauge
-	logger   log.Logger
+	logger   *slog.Logger
 }
 
 // Config holds the configuration for the exporter.
@@ -50,7 +50,7 @@ type BambooQueue struct {
 }
 
 // NewExporter creates a new instance of Exporter.
-func NewExporter(config *Config, logger log.Logger) *Exporter {
+func NewExporter(config *Config, logger *slog.Logger) *Exporter {
 	return &Exporter{
 		URI: config.ScrapeURI,
 		client: &http.Client{
@@ -106,13 +106,13 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 // scrapeMetrics fetches metrics from Bamboo and processes them.
 func (e *Exporter) scrapeMetrics(ch chan<- prometheus.Metric) float64 {
 	if err := e.scrapeAgents(); err != nil {
-		level.Error(e.logger).Log("msg", "Failed to scrape agents", "err", err)
+		e.logger.Error("Failed to scrape agents", "error", err)
 		e.failures.Inc()
 		return 0
 	}
 
 	if err := e.scrapeQueue(); err != nil {
-		level.Error(e.logger).Log("msg", "Failed to scrape queue", "err", err)
+		e.logger.Error("Failed to scrape queue", "error", err)
 		e.failures.Inc()
 		return 0
 	}
