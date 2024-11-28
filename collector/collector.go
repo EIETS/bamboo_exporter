@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"os"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -200,12 +201,27 @@ func (e *Exporter) scrapeQueue() error {
 
 // doRequest sends a GET request to the Bamboo API and returns the response body.
 func (e *Exporter) doRequest(endpoint string) ([]byte, error) {
+	configData, err := os.ReadFile("config.json")
+	if err != nil {
+		return nil, fmt.Errorf("error reading config file: %w", err)
+	}
+
+	var config struct {
+		BambooUsername string `json:"bamboo_username"`
+		BambooPassword string `json:"bamboo_password"`
+	}
+	err = json.Unmarshal(configData, &config)
+	if err != nil {
+		return nil, fmt.Errorf("error unmarshaling config file: %w", err)
+	}
+
 	req, err := http.NewRequest("GET", e.URI+endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("error creating request: %w", err)
 	}
 
 	req.Header.Set("Accept", "application/json")
+	req.SetBasicAuth(config.BambooUsername, config.BambooPassword)
 	resp, err := e.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("error performing request: %w", err)
