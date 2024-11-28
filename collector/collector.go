@@ -1,13 +1,14 @@
 package collector
 
 import (
-	"os"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
 
 	"log/slog"
@@ -42,8 +43,10 @@ type Config struct {
 type BambooAgent struct {
 	ID       int64  `json:"id"`
 	Name     string `json:"name"`
+	Type     string `json:"type"`
 	IsActive bool   `json:"active"`
 	IsBusy   bool   `json:"busy"`
+	Enabled  bool   `json:"enabled"`
 }
 
 // BambooQueue represents the build queue data fetched from the Bamboo API.
@@ -76,8 +79,8 @@ func NewExporter(config *Config, logger *slog.Logger) *Exporter {
 		agents: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Name:      "agents_status",
-			Help:      "Status of Bamboo agents (active/busy).",
-		}, []string{"name", "status"}),
+			Help:      "Status of Bamboo agents (enabled/active/busy).",
+		}, []string{"id", "name", "type", "enabled", "active", "busy"}),
 		queue: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Name:      "queue_size",
@@ -112,7 +115,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
-	success := e.scrapeMetrics(ch)
+	success := e.scrapeMetrics()
 	ch <- prometheus.MustNewConstMetric(e.up, prometheus.GaugeValue, success)
 	e.failures.Collect(ch)
 	e.agents.Collect(ch)
@@ -122,7 +125,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 }
 
 // scrapeMetrics fetches metrics from Bamboo and processes them.
-func (e *Exporter) scrapeMetrics(ch chan<- prometheus.Metric) float64 {
+func (e *Exporter) scrapeMetrics() float64 {
 	if err := e.scrapeAgents(); err != nil {
 		e.logger.Error("Failed to scrape agents", "error", err)
 		e.failures.Inc()
@@ -155,17 +158,16 @@ func (e *Exporter) scrapeAgents() error {
 	busyCount := 0
 
 	for _, agent := range agents {
-		status := "inactive"
 		if agent.IsActive {
-			status = "active"
 			activeCount++
 		}
-		e.agents.WithLabelValues(agent.Name, status).Set(1)
 
 		if agent.IsBusy {
-			e.agents.WithLabelValues(agent.Name, "busy").Set(1)
 			busyCount++
 		}
+		e.agents.WithLabelValues(strconv.FormatInt(agent.ID, 10), agent.Name, agent.Type,
+			fmt.Sprintf("%t", agent.Enabled), fmt.Sprintf("%t", agent.IsActive),
+			fmt.Sprintf("%t", agent.IsBusy)).Set(1)
 	}
 
 	if activeCount > 0 {
