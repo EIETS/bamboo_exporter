@@ -1,6 +1,4 @@
 # bamboo-prometheus-exporter
-[![Build Status](https://img.shields.io/github/actions/workflow/status/EIETS/bamboo_exporter/build.yml)](https://github.com/EIETS/bamboo_exporter/actions)  
-[![Docker Pulls](https://img.shields.io/docker/pulls/eitets/bamboo_exporter)](https://hub.docker.com/r/eitets/bamboo_exporter)  
 
 Bamboo-prometheus-exporter is a tool that scrapes metrics from Atlassian Bamboo and exposes them for Prometheus monitoring, enabling detailed CI/CD pipeline observability.
 
