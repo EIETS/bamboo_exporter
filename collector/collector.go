@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 
 	"log/slog"
@@ -31,6 +33,9 @@ type Exporter struct {
 	queueChange       prometheus.Gauge
 	logger            *slog.Logger
 	previousQueueSize int64
+	buildSuccess      *prometheus.CounterVec
+	buildFailure      *prometheus.CounterVec
+	buildCount        *prometheus.GaugeVec
 }
 
 // Config holds the configuration for the exporter.
@@ -96,6 +101,21 @@ func NewExporter(config *Config, logger *slog.Logger) *Exporter {
 			Name:      "queue_change",
 			Help:      "Change in the Bamboo build queue size since the last scrape.",
 		}),
+		buildSuccess: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "build_success_total",
+			Help:      "Successful builds per project version",
+		}, []string{"project", "name"}),
+		buildFailure: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "build_failure_total",
+			Help:      "Failed builds per project version",
+		}, []string{"project", "name"}),
+		buildCount: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "build_total",
+			Help:      "Total builds executed per project version",
+		}, []string{"project", "name"}),
 		logger: logger,
 	}
 }
@@ -108,6 +128,9 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	e.queue.Describe(ch)
 	e.utilization.Describe(ch)
 	e.queueChange.Describe(ch)
+	e.buildSuccess.Describe(ch)
+	e.buildFailure.Describe(ch)
+	e.buildCount.Describe(ch)
 }
 
 // Collect collects metrics from Bamboo and sends them to Prometheus.
@@ -122,6 +145,9 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	e.queue.Collect(ch)
 	e.utilization.Collect(ch)
 	e.queueChange.Collect(ch)
+	e.buildSuccess.Collect(ch)
+	e.buildFailure.Collect(ch)
+	e.buildCount.Collect(ch)
 }
 
 // scrapeMetrics fetches metrics from Bamboo and processes them.
@@ -134,6 +160,12 @@ func (e *Exporter) scrapeMetrics() float64 {
 
 	if err := e.scrapeQueue(); err != nil {
 		e.logger.Error("Failed to scrape queue", "error", err)
+		e.failures.Inc()
+		return 0
+	}
+
+	if err := e.scrapeBuildResults(); err != nil {
+		e.logger.Error("Failed to scrape build results", "error", err)
 		e.failures.Inc()
 		return 0
 	}
@@ -201,6 +233,71 @@ func (e *Exporter) scrapeQueue() error {
 	return nil
 }
 
+// scrapeBuildResults fetches and processes build results from Bamboo.
+func (e *Exporter) scrapeBuildResults() error {
+	currentIndex := 0
+	totalSize := 0
+	maxResult := 100
+
+	for {
+		params := url.Values{
+			"start-index": []string{strconv.Itoa(currentIndex)},
+			"max-result":  []string{strconv.Itoa(maxResult)},
+			"expand":      []string{"results.result"},
+		}
+
+		data, err := e.doRequest("/rest/api/latest/result?" + params.Encode())
+		if err != nil {
+			return fmt.Errorf("error fetching result: %w", err)
+		}
+
+		var response struct {
+			Results struct {
+				Size   int `json:"size"`
+				Result []struct {
+					Plan struct {
+						Name string `json:"name"`
+					} `json:"plan"`
+					BuildNumber int    `json:"buildNumber"`
+					State       string `json:"state"`
+				} `json:"result"`
+			} `json:"results"`
+		}
+
+		if err := json.Unmarshal(data, &response); err != nil {
+			return fmt.Errorf("error unmarshaling results: %w", err)
+		}
+
+		if totalSize == 0 {
+			totalSize = response.Results.Size
+		}
+
+		// process data of current page
+		for _, r := range response.Results.Result {
+			project, name := parseProjectAndName(r.Plan.Name)
+			labels := []string{project, name}
+
+			switch r.State {
+			case "Successful":
+				e.buildSuccess.WithLabelValues(labels...).Inc()
+			default:
+				e.buildFailure.WithLabelValues(labels...).Inc()
+			}
+
+			// set build count
+			e.buildCount.WithLabelValues(labels...).Set(float64(r.BuildNumber))
+		}
+
+		// end of page
+		fetchedCount := currentIndex + len(response.Results.Result)
+		if fetchedCount >= totalSize || len(response.Results.Result) == 0 {
+			break
+		}
+		currentIndex = fetchedCount
+	}
+	return nil
+}
+
 // doRequest sends a GET request to the Bamboo API and returns the response body.
 func (e *Exporter) doRequest(endpoint string) ([]byte, error) {
 	configData, err := os.ReadFile("config.json")
@@ -235,4 +332,16 @@ func (e *Exporter) doRequest(endpoint string) ([]byte, error) {
 	}
 
 	return io.ReadAll(resp.Body)
+}
+
+func parseProjectAndName(planName string) (project, name string) {
+	parts := strings.SplitN(planName, " - ", 2)
+	if len(parts) >= 2 {
+		project = strings.TrimSpace(parts[0])
+		name = strings.TrimSpace(parts[1])
+	} else {
+		project = "Unknown"
+		name = strings.TrimSpace(planName)
+	}
+	return
 }
