@@ -8,7 +8,7 @@ Bamboo-prometheus-exporter is a tool that scrapes metrics from Atlassian Bamboo 
 - **Build Queue Analytics**   
   Monitor queue size changes and agent utilization rates in real-time
 - **Project Build Metrics** 
-  Capture success/failure counts and total builds per project-plan combination
+  Capture success/failure counts. Capture total builds per project-plan combination
 - **Dynamic Labeling**  
   Auto-split plan.name into project and name labels (e.g., AXOS Releases - PB-AXOS-21.2 → project="AXOS Releases", name="PB-AXOS-21.2")
 
@@ -54,8 +54,8 @@ Create config.json:
 | bamboo_queue_size            | Gauge   | -                                     | Current build queue count             |
 | bamboo_queue_change          | Gauge   | -                                     | Queue size delta since last scrape    |
 | bamboo_agent_utilization     | Gauge   | -                                     | Busy/active agent ratio               |
-| bamboo_build_success_total   | Counter | project, name                         | Successful builds per plan            |
-| bamboo_build_failure_total   | Counter | project, name                         | Failed builds per plan                |
+| bamboo_build_success_total   | Counter | -                                     | Total successful builds               |
+| bamboo_build_failure_total   | Counter | -                                     | Total failed builds                   |
 | bamboo_build_total           | Gauge   | project, name                         | Latest build number per plan          |
 
 ## FAQ
