@@ -33,8 +33,8 @@ type Exporter struct {
 	queueChange       prometheus.Gauge
 	logger            *slog.Logger
 	previousQueueSize int64
-	buildSuccess      *prometheus.CounterVec
-	buildFailure      *prometheus.CounterVec
+	buildSuccess      prometheus.Counter
+	buildFailure      prometheus.Counter
 	buildCount        *prometheus.GaugeVec
 }
 
@@ -59,6 +59,20 @@ type BambooQueue struct {
 	QueuedBuilds struct {
 		Size int64 `json:"size"`
 	} `json:"queuedBuilds"`
+}
+
+// response represents the response from the Bamboo API /rest/api/latest/result.
+type response struct {
+	Results struct {
+		Size   int `json:"size"`
+		Result []struct {
+			Plan struct {
+				Name string `json:"name"`
+			} `json:"plan"`
+			BuildNumber int    `json:"buildNumber"`
+			State       string `json:"state"`
+		} `json:"result"`
+	} `json:"results"`
 }
 
 // NewExporter creates a new instance of Exporter.
@@ -101,16 +115,16 @@ func NewExporter(config *Config, logger *slog.Logger) *Exporter {
 			Name:      "queue_change",
 			Help:      "Change in the Bamboo build queue size since the last scrape.",
 		}),
-		buildSuccess: prometheus.NewCounterVec(prometheus.CounterOpts{
+		buildSuccess: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "build_success_total",
-			Help:      "Successful builds per project version",
-		}, []string{"project", "name"}),
-		buildFailure: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Help:      "Total successful builds",
+		}),
+		buildFailure: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "build_failure_total",
-			Help:      "Failed builds per project version",
-		}, []string{"project", "name"}),
+			Help:      "Total failed builds ",
+		}),
 		buildCount: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Name:      "build_total",
@@ -246,22 +260,11 @@ func (e *Exporter) scrapeBuildResults() error {
 			"expand":      []string{"results.result"},
 		}
 
+		response := response{}
+
 		data, err := e.doRequest("/rest/api/latest/result?" + params.Encode())
 		if err != nil {
 			return fmt.Errorf("error fetching result: %w", err)
-		}
-
-		var response struct {
-			Results struct {
-				Size   int `json:"size"`
-				Result []struct {
-					Plan struct {
-						Name string `json:"name"`
-					} `json:"plan"`
-					BuildNumber int    `json:"buildNumber"`
-					State       string `json:"state"`
-				} `json:"result"`
-			} `json:"results"`
 		}
 
 		if err := json.Unmarshal(data, &response); err != nil {
@@ -279,13 +282,14 @@ func (e *Exporter) scrapeBuildResults() error {
 
 			switch r.State {
 			case "Successful":
-				e.buildSuccess.WithLabelValues(labels...).Inc()
+				e.buildSuccess.Inc()
 			default:
-				e.buildFailure.WithLabelValues(labels...).Inc()
+				e.buildFailure.Inc()
 			}
 
 			// set build count
 			e.buildCount.WithLabelValues(labels...).Set(float64(r.BuildNumber))
+
 		}
 
 		// end of page
@@ -295,6 +299,7 @@ func (e *Exporter) scrapeBuildResults() error {
 		}
 		currentIndex = fetchedCount
 	}
+
 	return nil
 }
 
