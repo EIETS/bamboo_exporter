@@ -10,7 +10,7 @@ Bamboo-prometheus-exporter is a tool that scrapes metrics from Atlassian Bamboo 
 - **Project Build Metrics** 
   Capture success/failure counts. Capture total builds per project-plan combination
 - **Dynamic Labeling**  
-  Auto-split plan.name into project and name labels (e.g., AXOS Releases - PB-AXOS-21.2 → project="AXOS Releases", name="PB-AXOS-21.2")
+  Auto-split plan.name into project and name labels (e.g., XXXX Releases - PB-XXXX-21.2 → project="XXXX Releases", name="PB-XXXX-21.2")
 
 ## Installation
 

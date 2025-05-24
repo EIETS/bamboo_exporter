@@ -1,0 +1,146 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [ main ]  # 当PR合并到main时触发
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # 获取完整历史，用于生成版本号和changelog
+    
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.23.1'
+    
+    - name: Generate version and changelog
+      id: version
+      run: |
+        # 获取最后一个tag
+        LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+        echo "Last tag: $LAST_TAG"
+        
+        # 检查自上次tag以来是否有新提交
+        COMMITS_SINCE_TAG=$(git rev-list ${LAST_TAG}..HEAD --count)
+        echo "Commits since last tag: $COMMITS_SINCE_TAG"
+        
+        if [ ${COMMITS_SINCE_TAG} -eq 0 ]; then
+          echo "No new commits, skipping release"
+          echo "skip_release=true" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        
+        # 生成新版本号
+        if [ "${LAST_TAG}" = "v0.0.0" ]; then
+          NEW_VERSION="v1.0.0"
+        else
+          # 简单的patch版本递增，你也可以根据commit message来决定是major/minor/patch
+          VERSION_NUM=$(echo ${LAST_TAG} | sed 's/v//')
+          MAJOR=$(echo ${VERSION_NUM} | cut -d. -f1)
+          MINOR=$(echo ${VERSION_NUM} | cut -d. -f2)
+          PATCH=$(echo ${VERSION_NUM} | cut -d. -f3)
+          
+          # 检查commit message中是否包含breaking change或feat关键词
+          COMMIT_MESSAGES=$(git log ${LAST_TAG}..HEAD --pretty=format:"%s")
+          if echo "$COMMIT_MESSAGES" | grep -q "BREAKING CHANGE\|!:"; then
+            # Major version bump
+            NEW_MAJOR=$((MAJOR + 1))
+            NEW_VERSION="v${NEW_MAJOR}.0.0"
+          elif echo "$COMMIT_MESSAGES" | grep -q "feat:"; then
+            # Minor version bump
+            NEW_MINOR=$((MINOR + 1))
+            NEW_VERSION="v${MAJOR}.${NEW_MINOR}.0"
+          else
+            # Patch version bump
+            NEW_PATCH=$((PATCH + 1))
+            NEW_VERSION="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+          fi
+        fi
+        
+        echo "New version: $NEW_VERSION"
+        echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+        
+        # 生成changelog
+        CHANGELOG=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s (%h)" --reverse)
+        echo "changelog<<EOF" >> $GITHUB_OUTPUT
+        echo "$CHANGELOG" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+    
+    - name: Build binaries
+      if: steps.version.outputs.skip_release != 'true'
+      run: |
+        VERSION=${{ steps.version.outputs.new_version }}
+        mkdir -p dist
+        
+        # 构建不同平台的二进制文件
+        platforms=("linux/amd64" "linux/arm64" "windows/amd64" "darwin/amd64" "darwin/arm64")
+        
+        for platform in "${platforms[@]}"; do
+          platform_split=(${platform//\// })
+          GOOS=${platform_split[0]}
+          GOARCH=${platform_split[1]}
+          
+          output_name="bamboo-exporter-${VERSION}-${GOOS}-${GOARCH}"
+          if [ $GOOS = "windows" ]; then
+            output_name+='.exe'
+          fi
+          
+          echo "Building for $GOOS/$GOARCH..."
+          env CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build \
+            -ldflags="-s -w -X main.version=${VERSION}" \
+            -o dist/$output_name .
+          
+          # 创建压缩包
+          cd dist
+          if [ $GOOS = "windows" ]; then
+            zip ${output_name%.exe}.zip $output_name
+            rm $output_name
+          else
+            tar -czf ${output_name}.tar.gz $output_name
+            rm $output_name
+          fi
+          cd ..
+        done
+    
+    - name: Create Release
+      if: steps.version.outputs.skip_release != 'true'
+      uses: actions/create-release@v1
+      id: create_release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.version.outputs.new_version }}
+        release_name: Release ${{ steps.version.outputs.new_version }}
+        body: |
+          ## 🚀 What's New
+          
+          ${{ steps.version.outputs.changelog }}
+          
+          ## 📦 Download
+          
+          选择适合你平台的二进制文件下载：
+          - **Linux (x64)**: `bamboo-exporter-${{ steps.version.outputs.new_version }}-linux-amd64.tar.gz`
+          - **Linux (ARM64)**: `bamboo-exporter-${{ steps.version.outputs.new_version }}-linux-arm64.tar.gz`
+          - **Windows (x64)**: `bamboo-exporter-${{ steps.version.outputs.new_version }}-windows-amd64.zip`
+          - **macOS (Intel)**: `bamboo-exporter-${{ steps.version.outputs.new_version }}-darwin-amd64.tar.gz`
+          - **macOS (Apple Silicon)**: `bamboo-exporter-${{ steps.version.outputs.new_version }}-darwin-arm64.tar.gz`
+        draft: false
+        prerelease: false
+    
+    - name: Upload Release Assets
+      if: steps.version.outputs.skip_release != 'true'
+      run: |
+        upload_url="${{ steps.create_release.outputs.upload_url }}"
+        
+        for file in dist/*; do
+          filename=$(basename "$file")
+          echo "Uploading $filename..."
+          curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+               -H "Content-Type: application/octet-stream" \
+               --data-binary @"$file" \
+               "${upload_url%{?name,label}*}?name=$filename"
+        done
