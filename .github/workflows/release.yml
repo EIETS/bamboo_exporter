@@ -1,3 +1,4 @@
+# .github/workflows/release.yml - 自动发布 (基于VERSION文件)
 name: Auto Release
 
 on:
@@ -10,62 +11,144 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 0  # 获取完整历史，用于生成版本号和changelog
+        fetch-depth: 0  # 获取完整历史，用于生成changelog
     
     - name: Set up Go
       uses: actions/setup-go@v4
       with:
         go-version: '1.23.1'
     
-    - name: Generate version and changelog
+    - name: Check VERSION file and determine release
       id: version
       run: |
+        # 检查VERSION文件是否存在
+        if [ ! -f "VERSION" ]; then
+          echo "❌ VERSION file not found!"
+          echo "Please create a VERSION file in the root directory with format: 1.0.0"
+          exit 1
+        fi
+        
+        # 读取VERSION文件内容
+        CURRENT_VERSION=$(cat VERSION | tr -d '[:space:]')
+        echo "Version in file: $CURRENT_VERSION"
+        
+        # 验证版本格式 (x.y.z)
+        if ! echo "$CURRENT_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+
+    
+    - name: Build binaries
+      if: steps.version.outputs.skip_release != 'true'
+      run: |
+        VERSION=${{ steps.version.outputs.current_version }}
+        mkdir -p dist
+        
+        # 构建不同平台的二进制文件
+        platforms=("linux/amd64" "linux/arm64" "windows/amd64" "darwin/amd64" "darwin/arm64")
+        
+        for platform in "${platforms[@]}"; do
+          platform_split=(${platform//\// })
+          GOOS=${platform_split[0]}
+          GOARCH=${platform_split[1]}
+          
+          output_name="bamboo-exporter-v${VERSION}-${GOOS}-${GOARCH}"
+          if [ $GOOS = "windows" ]; then
+            output_name+='.exe'
+          fi
+          
+          echo "Building for $GOOS/$GOARCH..."
+          env CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build \
+            -ldflags="-s -w -X main.version=v${VERSION}" \
+            -o dist/$output_name .
+          
+          # 创建压缩包
+          cd dist
+          if [ $GOOS = "windows" ]; then
+            zip ${output_name%.exe}.zip $output_name
+            rm $output_name
+          else
+            tar -czf ${output_name}.tar.gz $output_name
+            rm $output_name
+          fi
+          cd ..
+        done
+    
+    - name: Create Release
+      if: steps.version.outputs.skip_release != 'true'
+      uses: actions/create-release@v1
+      id: create_release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.version.outputs.new_version }}
+        release_name: Release ${{ steps.version.outputs.new_version }}
+        body: |
+          ## 🚀 What's New
+          
+          ${{ steps.version.outputs.changelog }}
+          
+          ## 📦 Download
+          
+          选择适合你平台的二进制文件下载：
+          - **Linux (x64)**: `bamboo-exporter-${{ steps.version.outputs.new_version }}-linux-amd64.tar.gz`
+          - **Linux (ARM64)**: `bamboo-exporter-${{ steps.version.outputs.new_version }}-linux-arm64.tar.gz`
+          - **Windows (x64)**: `bamboo-exporter-${{ steps.version.outputs.new_version }}-windows-amd64.zip`
+          - **macOS (Intel)**: `bamboo-exporter-${{ steps.version.outputs.new_version }}-darwin-amd64.tar.gz`
+          - **macOS (Apple Silicon)**: `bamboo-exporter-${{ steps.version.outputs.new_version }}-darwin-arm64.tar.gz`
+        draft: false
+        prerelease: false
+    
+    - name: Upload Release Assets
+      if: steps.version.outputs.skip_release != 'true'
+      run: |
+        upload_url="${{ steps.create_release.outputs.upload_url }}"
+        
+        for file in dist/*; do
+          filename=$(basename "$file")
+          echo "Uploading $filename..."
+          curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+               -H "Content-Type: application/octet-stream" \
+               --data-binary @"$file" \
+               "${upload_url%{?name,label}*}?name=$filename"
+        done; then
+          echo "❌ Invalid version format in VERSION file: $CURRENT_VERSION"
+          echo "Expected format: x.y.z (e.g., 1.0.0)"
+          exit 1
+        fi
+        
+        # 添加v前缀
+        NEW_VERSION="v${CURRENT_VERSION}"
+        
         # 获取最后一个tag
         LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-        echo "Last tag: $LAST_TAG"
+        echo "Last release tag: $LAST_TAG"
+        echo "New version: $NEW_VERSION"
         
-        # 检查自上次tag以来是否有新提交
-        COMMITS_SINCE_TAG=$(git rev-list ${LAST_TAG}..HEAD --count)
-        echo "Commits since last tag: $COMMITS_SINCE_TAG"
-        
-        if [ ${COMMITS_SINCE_TAG} -eq 0 ]; then
-          echo "No new commits, skipping release"
+        # 检查版本是否有变化
+        if [ "$NEW_VERSION" = "$LAST_TAG" ]; then
+          echo "✅ Version $NEW_VERSION already released, skipping..."
           echo "skip_release=true" >> $GITHUB_OUTPUT
           exit 0
         fi
         
-        # 生成新版本号
-        if [ "${LAST_TAG}" = "v0.0.0" ]; then
-          NEW_VERSION="v1.0.0"
-        else
-          # 简单的patch版本递增，你也可以根据commit message来决定是major/minor/patch
-          VERSION_NUM=$(echo ${LAST_TAG} | sed 's/v//')
-          MAJOR=$(echo ${VERSION_NUM} | cut -d. -f1)
-          MINOR=$(echo ${VERSION_NUM} | cut -d. -f2)
-          PATCH=$(echo ${VERSION_NUM} | cut -d. -f3)
-          
-          # 检查commit message中是否包含breaking change或feat关键词
-          COMMIT_MESSAGES=$(git log ${LAST_TAG}..HEAD --pretty=format:"%s")
-          if echo "$COMMIT_MESSAGES" | grep -q "BREAKING CHANGE\|!:"; then
-            # Major version bump
-            NEW_MAJOR=$((MAJOR + 1))
-            NEW_VERSION="v${NEW_MAJOR}.0.0"
-          elif echo "$COMMIT_MESSAGES" | grep -q "feat:"; then
-            # Minor version bump
-            NEW_MINOR=$((MINOR + 1))
-            NEW_VERSION="v${MAJOR}.${NEW_MINOR}.0"
-          else
-            # Patch version bump
-            NEW_PATCH=$((PATCH + 1))
-            NEW_VERSION="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+        # 检查版本是否比上一个版本新
+        if [ "$LAST_TAG" != "v0.0.0" ]; then
+          LAST_VERSION=$(echo $LAST_TAG | sed 's/v//')
+          if ! printf '%s\n%s\n' "$LAST_VERSION" "$CURRENT_VERSION" | sort -V -C; then
+            echo "⚠️ Warning: New version $CURRENT_VERSION is not higher than last version $LAST_VERSION"
+            echo "This might indicate a version rollback or incorrect versioning"
           fi
         fi
         
-        echo "New version: $NEW_VERSION"
+        echo "✅ Version changed from $LAST_TAG to $NEW_VERSION, creating release..."
         echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+        echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
         
-        # 生成changelog
-        CHANGELOG=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s (%h)" --reverse)
+        # 生成changelog (从上个tag到现在的提交)
+        if [ "$LAST_TAG" = "v0.0.0" ]; then
+          CHANGELOG=$(git log --pretty=format:"- %s (%h)" --reverse HEAD)
+        else
+          CHANGELOG=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s (%h)" --reverse)
+        fi
+        
         echo "changelog<<EOF" >> $GITHUB_OUTPUT
         echo "$CHANGELOG" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
