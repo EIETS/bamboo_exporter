@@ -65,6 +65,7 @@ func main() {
 		os.Exit(0)
 	}()
 
+	// expose metrics endpoint
 	http.Handle(*metricsEndpoint, promhttp.Handler())
 
 	// configure the landing page
