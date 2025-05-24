@@ -1,4 +1,3 @@
-# .github/workflows/release.yml - 自动发布 (基于VERSION文件)
 name: Auto Release
 
 on:
@@ -21,45 +20,34 @@ jobs:
     - name: Check VERSION file and determine release
       id: version
       run: |
-        # 检查VERSION文件是否存在
         if [ ! -f "VERSION" ]; then
           echo "❌ VERSION file not found!"
-          echo "Please create a VERSION file in the root directory with format: 1.0.0"
           exit 1
         fi
 
-        # 读取VERSION文件内容
         CURRENT_VERSION=$(cat VERSION | tr -d '[:space:]')
         echo "Version in file: $CURRENT_VERSION"
 
-        # 验证版本格式 (x.y.z)
         if ! echo "$CURRENT_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
           echo "❌ Invalid version format in VERSION file: $CURRENT_VERSION"
-          echo "Expected format: x.y.z (e.g., 1.0.0)"
           exit 1
         fi
 
-        # 添加v前缀
         NEW_VERSION="v${CURRENT_VERSION}"
-
-        # 获取最后一个tag
         LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
         echo "Last release tag: $LAST_TAG"
         echo "New version: $NEW_VERSION"
 
-        # 检查版本是否有变化
         if [ "$NEW_VERSION" = "$LAST_TAG" ]; then
           echo "✅ Version $NEW_VERSION already released, skipping..."
           echo "skip_release=true" >> $GITHUB_OUTPUT
           exit 0
         fi
 
-        # 检查版本是否比上一个版本新
         if [ "$LAST_TAG" != "v0.0.0" ]; then
           LAST_VERSION=$(echo $LAST_TAG | sed 's/v//')
           if ! printf '%s\n%s\n' "$LAST_VERSION" "$CURRENT_VERSION" | sort -V -C; then
             echo "⚠️ Warning: New version $CURRENT_VERSION is not higher than last version $LAST_VERSION"
-            echo "This might indicate a version rollback or incorrect versioning"
           fi
         fi
 
@@ -67,7 +55,6 @@ jobs:
         echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
         echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
 
-        # 生成changelog
         if [ "$LAST_TAG" = "v0.0.0" ]; then
           CHANGELOG=$(git log --pretty=format:"- %s (%h)" --reverse HEAD)
         else
@@ -141,12 +128,14 @@ jobs:
       if: steps.version.outputs.skip_release != 'true'
       run: |
         upload_url="${{ steps.create_release.outputs.upload_url }}"
+        upload_url="${upload_url%\{*}"  # ✅ 删除 { 开始的模板部分
 
         for file in dist/*; do
           filename=$(basename "$file")
           echo "Uploading $filename..."
-          curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+          curl -sSL \
+               -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
                -H "Content-Type: application/octet-stream" \
                --data-binary @"$file" \
-               "${upload_url%{?name,label}*}?name=$filename"
+               "${upload_url}?name=$filename"
         done
